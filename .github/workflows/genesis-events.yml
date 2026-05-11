@@ -13,6 +13,12 @@ permissions:
   issues: write
   pull-requests: write
 
+# Serialize with the scheduled orchestrator to prevent races
+# (e.g. duplicate plan/completion issues if scheduled + event fire together).
+concurrency:
+  group: genesis-orchestrator
+  cancel-in-progress: false
+
 jobs:
   orchestrate:
     runs-on: ubuntu-latest

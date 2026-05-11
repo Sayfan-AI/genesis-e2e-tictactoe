@@ -11,6 +11,12 @@ permissions:
   issues: write
   pull-requests: write
 
+# Serialize orchestrator runs to prevent concurrent runs from racing
+# (e.g. duplicate milestone plans on first project bootstrap).
+concurrency:
+  group: genesis-orchestrator
+  cancel-in-progress: false
+
 jobs:
   orchestrate:
     runs-on: ubuntu-latest

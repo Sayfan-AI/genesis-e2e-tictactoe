@@ -49,6 +49,12 @@ GitHub Actions serve as the trigger layer:
 
 Each trigger launches a Claude Agent SDK session as the orchestrator.
 
+## Lessons Learned (curated by Evolver)
+
+- **GitHub Pages enablement is human-gated.** The Genesis App lacks `pages: write`, so `gh api -X POST .../pages` returns 403. Don't keep retrying — surface a `needs:human` task explaining Option A (toggle Settings → Pages), Option B (grant the App `pages: write`), or Option C (Actions-based deploy with default `GITHUB_TOKEN`). See issue #5 for the template.
+- **Orchestrator runs are now serialized.** Workflows `genesis-orchestrator.yml` and `genesis-events.yml` share `concurrency.group: genesis-orchestrator` to prevent overlapping runs from creating duplicate plan/completion issues (regression observed: two M1 plan issues #2 and #3 were created 30s apart by concurrent `workflow_dispatch` invocations).
+- **Two `workflow_dispatch` runs of the orchestrator within seconds will race** — even with the duplicate-issue rule in the agent prompt, the second run won't see the first's not-yet-posted issue. The concurrency group is the structural fix; the prompt rule is defense in depth.
+
 ## Tech Stack Preferences
 
 Defaults (override as needed):
