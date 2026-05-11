@@ -14,6 +14,7 @@
     --x-color: #f87171;
     --o-color: #34d399;
     --border: #475569;
+    --muted: #94a3b8;
   }
   * { box-sizing: border-box; }
   html, body {
@@ -35,6 +36,32 @@
     font-weight: 600;
     letter-spacing: 0.05em;
   }
+  #mode-controls {
+    display: inline-flex;
+    gap: 0;
+    margin-bottom: 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  #mode-controls button {
+    background: var(--cell-bg);
+    color: var(--muted);
+    border: none;
+    padding: 0.5rem 1rem;
+    font-size: 0.95rem;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+  #mode-controls button + button { border-left: 1px solid var(--border); }
+  #mode-controls button:hover { background: var(--cell-bg-hover); color: var(--fg); }
+  #mode-controls button[aria-pressed="true"] {
+    background: var(--accent);
+    color: #0f172a;
+    font-weight: 600;
+  }
+  #mode-controls button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   #status {
     font-size: 1.25rem;
     margin: 1rem 0;
@@ -88,6 +115,10 @@
 <body>
 <main>
   <h1>Tic-Tac-Toe</h1>
+  <div id="mode-controls" role="group" aria-label="Game mode">
+    <button id="mode-two-player" type="button" aria-pressed="true">Two players</button>
+    <button id="mode-vs-computer" type="button" aria-pressed="false">Vs computer</button>
+  </div>
   <div id="status" aria-live="polite">X to move</div>
   <div id="board" role="grid" aria-label="Tic-tac-toe board">
     <button class="cell" type="button" data-cell="0" aria-label="Cell 1"></button>
@@ -112,34 +143,85 @@
     [0, 4, 8], [2, 4, 6]
   ];
 
+  var MODE_TWO_PLAYER = 'two-player';
+  var MODE_VS_COMPUTER = 'vs-computer';
+  var HUMAN = 'X';
+  var COMPUTER = 'O';
+  // Delay before the computer moves so the human can see their move land.
+  var COMPUTER_MOVE_DELAY_MS = 350;
+
   var board;
   var currentPlayer;
   var gameOver;
+  var mode = MODE_TWO_PLAYER;
+  var computerThinking = false;
+  var computerMoveTimer = null;
 
   var cells = Array.prototype.slice.call(
     document.querySelectorAll('[data-cell]')
   );
   var statusEl = document.getElementById('status');
   var resetEl = document.getElementById('reset');
+  var modeTwoPlayerBtn = document.getElementById('mode-two-player');
+  var modeVsComputerBtn = document.getElementById('mode-vs-computer');
 
-  function checkWinner() {
+  function checkWinnerOn(b) {
     for (var i = 0; i < WINNING_LINES.length; i++) {
       var line = WINNING_LINES[i];
-      var a = board[line[0]];
-      var b = board[line[1]];
-      var c = board[line[2]];
-      if (a && a === b && a === c) {
+      var a = b[line[0]];
+      var c = b[line[1]];
+      var d = b[line[2]];
+      if (a && a === c && a === d) {
         return { winner: a, line: line };
       }
     }
     return null;
   }
 
-  function isDraw() {
-    for (var i = 0; i < board.length; i++) {
-      if (!board[i]) return false;
+  function isBoardFull(b) {
+    for (var i = 0; i < b.length; i++) {
+      if (!b[i]) return false;
     }
     return true;
+  }
+
+  function checkWinner() { return checkWinnerOn(board); }
+  function isDraw() { return isBoardFull(board); }
+
+  // Minimax for perfect-play tic-tac-toe.
+  // Returns { score, move } from `player`'s perspective.
+  // Score: +10 - depth on win, depth - 10 on loss, 0 on draw.
+  function minimax(b, player, toMove, depth) {
+    var result = checkWinnerOn(b);
+    if (result) {
+      if (result.winner === player) return { score: 10 - depth, move: -1 };
+      return { score: depth - 10, move: -1 };
+    }
+    if (isBoardFull(b)) return { score: 0, move: -1 };
+
+    var maximizing = toMove === player;
+    var bestScore = maximizing ? -Infinity : Infinity;
+    var bestMove = -1;
+    var nextToMove = toMove === 'X' ? 'O' : 'X';
+
+    for (var i = 0; i < b.length; i++) {
+      if (b[i]) continue;
+      b[i] = toMove;
+      var sub = minimax(b, player, nextToMove, depth + 1);
+      b[i] = '';
+      if (maximizing) {
+        if (sub.score > bestScore) { bestScore = sub.score; bestMove = i; }
+      } else {
+        if (sub.score < bestScore) { bestScore = sub.score; bestMove = i; }
+      }
+    }
+    return { score: bestScore, move: bestMove };
+  }
+
+  function chooseComputerMove() {
+    var snapshot = board.slice();
+    var result = minimax(snapshot, COMPUTER, COMPUTER, 0);
+    return result.move;
   }
 
   function render() {
@@ -152,56 +234,125 @@
         cell.disabled = true;
       } else {
         cell.removeAttribute('data-mark');
-        cell.disabled = gameOver;
+        // In vs-computer mode, lock cells while it's the computer's turn so
+        // the human can't preempt the AI.
+        var lockForComputer = mode === MODE_VS_COMPUTER &&
+          (computerThinking || currentPlayer === COMPUTER);
+        cell.disabled = gameOver || lockForComputer;
       }
     }
   }
 
-  function setStatus(text) {
-    statusEl.textContent = text;
+  function setStatus(text) { statusEl.textContent = text; }
+
+  function statusForTurn() {
+    if (mode === MODE_VS_COMPUTER) {
+      return currentPlayer === HUMAN ? 'Your turn (X)' : 'Computer thinking...';
+    }
+    return currentPlayer + ' to move';
   }
 
-  function handleCellClick(event) {
-    if (gameOver) return;
-    var cell = event.currentTarget;
-    var index = parseInt(cell.getAttribute('data-cell'), 10);
-    if (isNaN(index) || index < 0 || index > 8) return;
-    if (board[index]) return;
-
-    board[index] = currentPlayer;
+  function applyMove(index, player) {
+    board[index] = player;
 
     var result = checkWinner();
     if (result) {
       gameOver = true;
       render();
       setStatus(result.winner + ' wins!');
-      return;
+      return true;
     }
-
     if (isDraw()) {
       gameOver = true;
       render();
       setStatus("It's a draw");
-      return;
+      return true;
     }
 
     currentPlayer = currentPlayer === 'X' ? 'O' : 'X';
     render();
-    setStatus(currentPlayer + ' to move');
+    setStatus(statusForTurn());
+    return false;
+  }
+
+  function scheduleComputerMove() {
+    if (gameOver) return;
+    if (mode !== MODE_VS_COMPUTER) return;
+    if (currentPlayer !== COMPUTER) return;
+
+    computerThinking = true;
+    render();
+
+    if (computerMoveTimer !== null) clearTimeout(computerMoveTimer);
+    computerMoveTimer = setTimeout(function () {
+      computerMoveTimer = null;
+      if (gameOver || mode !== MODE_VS_COMPUTER || currentPlayer !== COMPUTER) {
+        computerThinking = false;
+        render();
+        return;
+      }
+      var move = chooseComputerMove();
+      computerThinking = false;
+      if (move < 0 || move > 8 || board[move]) {
+        // Fallback: first empty cell.
+        for (var i = 0; i < board.length; i++) {
+          if (!board[i]) { move = i; break; }
+        }
+      }
+      applyMove(move, COMPUTER);
+    }, COMPUTER_MOVE_DELAY_MS);
+  }
+
+  function handleCellClick(event) {
+    if (gameOver) return;
+    if (mode === MODE_VS_COMPUTER && (computerThinking || currentPlayer === COMPUTER)) {
+      return;
+    }
+    var cell = event.currentTarget;
+    var index = parseInt(cell.getAttribute('data-cell'), 10);
+    if (isNaN(index) || index < 0 || index > 8) return;
+    if (board[index]) return;
+
+    var finished = applyMove(index, currentPlayer);
+    if (finished) return;
+
+    if (mode === MODE_VS_COMPUTER && currentPlayer === COMPUTER) {
+      scheduleComputerMove();
+    }
   }
 
   function resetGame() {
+    if (computerMoveTimer !== null) {
+      clearTimeout(computerMoveTimer);
+      computerMoveTimer = null;
+    }
+    computerThinking = false;
     board = ['', '', '', '', '', '', '', '', ''];
     currentPlayer = 'X';
     gameOver = false;
     render();
-    setStatus('X to move');
+    setStatus(statusForTurn());
+    // X (human) always moves first in vs-computer mode, so no auto-move on reset.
+  }
+
+  function setMode(newMode) {
+    if (newMode !== MODE_TWO_PLAYER && newMode !== MODE_VS_COMPUTER) return;
+    if (mode === newMode) {
+      resetGame();
+      return;
+    }
+    mode = newMode;
+    modeTwoPlayerBtn.setAttribute('aria-pressed', String(mode === MODE_TWO_PLAYER));
+    modeVsComputerBtn.setAttribute('aria-pressed', String(mode === MODE_VS_COMPUTER));
+    resetGame();
   }
 
   for (var i = 0; i < cells.length; i++) {
     cells[i].addEventListener('click', handleCellClick);
   }
   resetEl.addEventListener('click', resetGame);
+  modeTwoPlayerBtn.addEventListener('click', function () { setMode(MODE_TWO_PLAYER); });
+  modeVsComputerBtn.addEventListener('click', function () { setMode(MODE_VS_COMPUTER); });
 
   resetGame();
 })();
