@@ -33,7 +33,37 @@ jobs:
           permission-pull-requests: write
           permission-workflows: write
 
+      # Deterministic precheck: skip scheduled ticks when we're gated on a
+      # `needs:human` plan/completion issue. The Claude session would just
+      # read the same state and decide "do nothing — wait" (~$0.30, ~1 min
+      # per tick). When the human closes the gate, the issues.closed event
+      # in genesis-events.yml fires a real orchestrator run. Manual
+      # workflow_dispatch invocations always run so a human can force a
+      # cycle.
+      - name: Check for human gate
+        id: gate
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Match plan/completion gate issues by label + title keyword.
+          # Body-only matches risk false positives from unrelated mentions.
+          GATED=$(gh issue list \
+            --state open \
+            --label "needs:human" \
+            --json number,title \
+            --jq '[.[] | select(.title | test("(?i)\\b(plan|complete)\\b"))] | length')
+          echo "gated_count=$GATED" >> "$GITHUB_OUTPUT"
+          if [ "$GATED" -gt 0 ]; then
+            echo "Orchestrator gated on $GATED open needs:human plan/completion issue(s); skipping Claude invocation."
+            gh issue list --state open --label "needs:human" --json number,title \
+              --jq '.[] | "  #\(.number) \(.title)"'
+          fi
+
       - uses: anthropics/claude-code-action@v1
+        if: github.event_name != 'schedule' || steps.gate.outputs.gated_count == '0'
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ steps.app-token.outputs.token }}
