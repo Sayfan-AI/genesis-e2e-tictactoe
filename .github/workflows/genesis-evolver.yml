@@ -27,7 +27,53 @@ jobs:
           permission-pull-requests: write
           permission-workflows: write
 
+      # Deterministic activity check: skip scheduled evolver ticks when there
+      # has been no agent activity since the last successful evolver run.
+      # Without this, a quiet project (e.g. waiting on a human gate) still
+      # pays ~$1.20-$1.87 per day for an evolver session that produces no
+      # commits. Activity = new commits, closed issues, or failed workflow
+      # runs since the last evolver success. Manual workflow_dispatch always
+      # runs so a human can force a review.
+      - name: Check for activity since last evolver run
+        id: activity
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          LAST=$(gh run list \
+            --workflow "Genesis Evolver" \
+            --status success \
+            --limit 1 \
+            --json createdAt \
+            --jq '.[0].createdAt // ""')
+          if [ -z "$LAST" ]; then
+            echo "No prior successful evolver run found; will run."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Last successful evolver run: $LAST"
+          NEW_COMMITS=$(gh api "repos/${GH_REPO}/commits?since=${LAST}" --jq 'length')
+          CLOSED_ISSUES=$(gh api "repos/${GH_REPO}/issues?state=closed&since=${LAST}&per_page=100" \
+            --jq '[.[] | select(.pull_request == null)] | length')
+          FAILED_RUNS=$(gh run list \
+            --status failure \
+            --created ">=${LAST}" \
+            --limit 100 \
+            --json databaseId \
+            --jq 'length')
+          echo "Since last evolver run: commits=$NEW_COMMITS closed_issues=$CLOSED_ISSUES failed_runs=$FAILED_RUNS"
+          TOTAL=$((NEW_COMMITS + CLOSED_ISSUES + FAILED_RUNS))
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "No activity since last evolver run; skipping Claude invocation."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: anthropics/claude-code-action@v1
+        if: github.event_name != 'schedule' || steps.activity.outputs.should_run == 'true'
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ steps.app-token.outputs.token }}

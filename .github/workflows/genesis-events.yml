@@ -49,4 +49,9 @@ jobs:
             - Event: ${{ github.event_name }} / ${{ github.event.action }}
 
             Assess this event in context of the project state and take appropriate action.
-          claude_args: "--max-turns 10 --allowedTools Read,Edit,Bash,Glob,Grep,Agent"
+          # 20 turns matches the scheduled orchestrator. The previous value (10)
+          # was too tight: run #25650615146 (issue.opened for issue #2, first
+          # plan creation) hit error_max_turns and cost $1.04 for an aborted
+          # session. Plan/completion work involves issue summary + drafting +
+          # creating + labeling, which routinely takes 10-15 turns.
+          claude_args: "--max-turns 20 --allowedTools Read,Edit,Bash,Glob,Grep,Agent"
