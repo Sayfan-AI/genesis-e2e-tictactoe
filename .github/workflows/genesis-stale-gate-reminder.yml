@@ -1,0 +1,91 @@
+name: Genesis Stale Gate Reminder
+
+# Posts ONE reminder comment on each open `needs:human` issue that has been
+# open for more than STALE_DAYS without a reminder. Adds `reminder-sent` to
+# prevent re-firing. Per the human-interaction agent's guideline "One reminder
+# for blocking requests. Don't escalate further", this workflow only fires
+# once per issue — the human will get to it when they get to it.
+#
+# Why deterministic (not a Claude agent): the scheduled orchestrator and
+# evolver both skip Claude invocation while a human gate is open, which also
+# disables any "stuck for 2 cycles" escalation logic inside those agents.
+# Re-enabling Claude for a single comment would burn ~$0.30-$1.00 per tick
+# to derive the same fixed message. See CLAUDE.md "Lessons Learned" for the
+# decision record.
+
+on:
+  schedule:
+    # Daily at 07:00 UTC (one hour after the evolver, so they don't fight
+    # for runner capacity)
+    - cron: '0 7 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  # An issue must be open this many days before a reminder fires.
+  STALE_DAYS: '2'
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          app-id: ${{ secrets.GENESIS_APP_ID }}
+          private-key: ${{ secrets.GENESIS_APP_PRIVATE_KEY }}
+          permission-issues: write
+
+      - name: Find stale needs:human issues and post one reminder each
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          STALE_DAYS: ${{ env.STALE_DAYS }}
+        run: |
+          set -euo pipefail
+
+          # Threshold: issues created before this timestamp are eligible.
+          CUTOFF=$(date -u -d "${STALE_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ)
+          echo "Cutoff (issues created at or before): $CUTOFF"
+
+          # Find open needs:human issues that don't already have reminder-sent.
+          # Client-side filter on createdAt because `gh issue list` doesn't
+          # expose a created-before filter directly.
+          STALE=$(gh issue list \
+            --state open \
+            --label "needs:human" \
+            --json number,title,createdAt,labels \
+            --jq "[.[]
+                  | select(.createdAt <= \"${CUTOFF}\")
+                  | select([.labels[].name] | index(\"reminder-sent\") | not)]")
+
+          COUNT=$(echo "$STALE" | jq 'length')
+          echo "Stale issues without reminder: $COUNT"
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "Nothing to remind on. Exiting."
+            exit 0
+          fi
+
+          echo "$STALE" | jq -c '.[]' | while read -r issue; do
+            NUM=$(echo "$issue" | jq -r '.number')
+            TITLE=$(echo "$issue" | jq -r '.title')
+            CREATED=$(echo "$issue" | jq -r '.createdAt')
+
+            # Reminder copy: keep neutral and informative. The agent guideline
+            # is "one reminder, don't escalate further" — this is the one.
+            BODY=$(cat <<EOF
+Friendly reminder: this issue has been open for more than ${STALE_DAYS} days and is labeled \`needs:human\`, which blocks the dev system from advancing.
+
+If you're waiting on something else, ignore this — no further reminders will be sent on this issue. Closing it (or commenting with what you need) will let the orchestrator pick up the next unit of work.
+
+Original request: ${TITLE} (opened ${CREATED}).
+EOF
+)
+            echo "Reminding on #${NUM}: ${TITLE}"
+            gh issue comment "$NUM" --body "$BODY"
+            gh issue edit "$NUM" --add-label "reminder-sent"
+          done
