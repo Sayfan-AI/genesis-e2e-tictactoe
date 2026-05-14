@@ -77,14 +77,12 @@ jobs:
 
             # Reminder copy: keep neutral and informative. The agent guideline
             # is "one reminder, don't escalate further" — this is the one.
-            BODY=$(cat <<EOF
-Friendly reminder: this issue has been open for more than ${STALE_DAYS} days and is labeled \`needs:human\`, which blocks the dev system from advancing.
-
-If you're waiting on something else, ignore this — no further reminders will be sent on this issue. Closing it (or commenting with what you need) will let the orchestrator pick up the next unit of work.
-
-Original request: ${TITLE} (opened ${CREATED}).
-EOF
-)
+            # Use printf (not heredoc) so the body lines stay indented within
+            # the YAML run: | block — heredocs at column 0 break the YAML parse.
+            BODY=$(printf '%s\n\n%s\n\n%s\n' \
+              "Friendly reminder: this issue has been open for more than ${STALE_DAYS} days and is labeled \`needs:human\`, which blocks the dev system from advancing." \
+              "If you're waiting on something else, ignore this — no further reminders will be sent on this issue. Closing it (or commenting with what you need) will let the orchestrator pick up the next unit of work." \
+              "Original request: ${TITLE} (opened ${CREATED}).")
             echo "Reminding on #${NUM}: ${TITLE}"
             gh issue comment "$NUM" --body "$BODY"
             gh issue edit "$NUM" --add-label "reminder-sent"
